@@ -2190,3 +2190,26 @@ def test_null_head_len():
         assert null_head_len(table) == expected
     blocks = KVCacheBlocks(([null] * 4 + real, [null] + real[:1] + [null]))
     assert blocks.get_unhashed_block_ids_all_groups() == [[1, 2, 3], [1]]
+
+
+def test_bitblend_tiers_isolate_prefix_hash_chain_and_preserve_salt():
+    hashes = {}
+    for tier in ("low", "mid", "high"):
+        request = make_request(
+            request_id=tier,
+            prompt_token_ids=list(range(6)),
+            mm_positions=None,
+            mm_hashes=None,
+            cache_salt="user-salt",
+        )
+        request.sampling_params.extra_args = {"bitblend_tier": tier}
+        first, _ = generate_block_hash_extra_keys(request, 0, 3, 0)
+        second, _ = generate_block_hash_extra_keys(request, 3, 6, 0)
+        assert first == (("cache_salt", "user-salt"), ("bitblend_tier", tier))
+        assert second is None
+        assert to_event_extra_keys([first]) == [("user-salt", ("bitblend_tier", tier))]
+        parent = hash_block_tokens(sha256, None, [0, 1, 2], first)
+        hashes[tier] = (parent, hash_block_tokens(sha256, parent, [3, 4, 5], second))
+        assert parent == hash_block_tokens(sha256, None, [0, 1, 2], first)
+    assert len({h[0] for h in hashes.values()}) == 3
+    assert len({h[1] for h in hashes.values()}) == 3

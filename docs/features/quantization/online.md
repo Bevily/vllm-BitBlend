@@ -55,6 +55,11 @@ vllm serve Qwen/Qwen3.5-35B-A3B --quantization mxfp4 \
 
 ## Advanced Configuration
 
+On SM12x GPUs (including RTX 5090), the FlashInfer MXFP4 linear backend uses
+cuDNN for W4A4 GEMM and CuTe-DSL for activation quantization. FlashInfer 0.7.2's
+SM12x CuTe-DSL GEMM supports NVFP4 but rejects MXFP4. Other supported GPU
+families continue to use CuTe-DSL GEMM.
+
 For fine-grained control, use a `quantization_config` dictionary.
 
 ### Schema

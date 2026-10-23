@@ -704,3 +704,88 @@ def test_pooling_model_releases_prompt_embeds():
     input_batch.condense()
 
     assert req_index not in input_batch.req_prompt_embeds
+
+
+@pytest.mark.parametrize("threshold", [None, 1])
+def test_bitblend_reorder_preserves_request_state_and_attention_regions(threshold):
+    from vllm.model_executor.layers.quantization.bitblend.config import BitBlendConfig
+    from vllm.model_executor.layers.quantization.bitblend.runtime import (
+        get_execution_plan,
+    )
+    from vllm.v1.worker.bitblend_runtime import (
+        execution_context_for_batch,
+        reorder_tier_batch,
+    )
+
+    batch = InputBatch(
+        max_num_reqs=8,
+        max_model_len=64,
+        max_num_batched_tokens=64,
+        device=torch.device("cpu"),
+        vocab_size=1024,
+        block_sizes=[1],
+        max_num_blocks_per_req=[64],
+    )
+    config = BitBlendConfig(mixed_batch=True)
+    requests = {}
+    scheduled = {}
+    # All four native attention regions; tiers intentionally out of order.
+    specs = [
+        ("high", 0, 3),
+        ("high", 8, 1),
+        ("mid", 2, 1),
+        ("high", 2, 3),
+        ("low", 0, 3),
+        ("low", 8, 1),
+        ("low", 2, 1),
+        ("low", 2, 3),
+    ]
+    for i, (tier, computed, count) in enumerate(specs):
+        req = CachedRequestState(
+            req_id=str(i),
+            prompt_token_ids=[i + 1] * 8,
+            sampling_params=SamplingParams(
+                temperature=0, extra_args={"bitblend_tier": tier}
+            ),
+            pooling_params=None,
+            mm_features=[],
+            block_ids=([i],),
+            generator=None,
+            num_computed_tokens=computed,
+            output_token_ids=[],
+        )
+        batch.add_request(req)
+        requests[req.req_id] = req
+        scheduled[req.req_id] = count
+    reorder_tier_batch(config, batch, requests, scheduled, threshold)
+    expected = (
+        ["4", "5", "6", "7", "2", "0", "1", "3"]
+        if threshold is None
+        else ["5", "1", "6", "2", "7", "3", "4", "0"]
+    )
+    assert batch.req_ids == expected
+    for i, req_id in enumerate(batch.req_ids):
+        assert batch.req_id_to_index[req_id] == i
+        assert batch.num_computed_tokens_cpu[i] == specs[int(req_id)][1]
+        assert batch.token_ids_cpu[i, 0] == int(req_id) + 1
+        assert batch.block_table[0].block_table.np[i, 0] == int(req_id)
+    with execution_context_for_batch(
+        config, batch, requests, scheduled, sum(scheduled.values())
+    ):
+        plan = get_execution_plan()
+        token_tiers = [
+            span.tier for span in plan.spans for _ in range(span.stop - span.start)
+        ]
+        assert token_tiers == [
+            specs[int(r)][0] for r in expected for _ in range(scheduled[r])
+        ]
+    assert get_execution_plan() is None
+    padded = sum(scheduled.values()) + 3
+    with execution_context_for_batch(config, batch, requests, scheduled, padded):
+        plan = get_execution_plan()
+        assert plan.num_tokens == padded
+        padded_tiers = [
+            span.tier for span in plan.spans for _ in range(span.stop - span.start)
+        ]
+        assert padded_tiers == token_tiers + [token_tiers[-1]] * 3
+    assert get_execution_plan() is None

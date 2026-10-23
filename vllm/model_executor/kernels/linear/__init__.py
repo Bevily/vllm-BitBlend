@@ -22,6 +22,12 @@ from vllm.model_executor.kernels.linear.base import (
     MMLinearKernel,
     MMLinearLayerConfig,
 )
+from vllm.model_executor.kernels.linear.bitblend.base import (
+    BitBlendBackend,
+)
+from vllm.model_executor.kernels.linear.bitblend.base import (
+    select_backend as select_bitblend_backend,
+)
 from vllm.model_executor.kernels.linear.mixed_precision import (
     MPLinearKernel,
     MPLinearLayerConfig,
@@ -1307,6 +1313,8 @@ def register_linear_kernel(
 
 
 __all__ = [
+    "BitBlendBackend",
+    "select_bitblend_backend",
     "fp8_scaled_mm_is_batch_invariant",
     "init_fp8_linear_kernel",
     "init_int8_linear_kernel",

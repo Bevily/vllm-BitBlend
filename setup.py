@@ -18,6 +18,7 @@ import torch
 from packaging.version import Version, parse
 from setuptools import Extension, setup
 from setuptools.command.build_ext import build_ext
+from setuptools.command.build_py import build_py
 from setuptools_rust.build import build_rust
 from setuptools_scm import get_version
 from torch.utils.cpp_extension import CUDA_HOME, ROCM_HOME
@@ -1619,12 +1620,42 @@ if _build_custom_ops():
         ext_modules.append(CMakeExtension(name="vllm._C_stable_libtorch"))
         ext_modules.append(CMakeExtension(name="vllm._moe_C_stable_libtorch"))
 
+
+class build_py_with_kernel_sources(build_py):
+    """Ship JIT sources from the canonical csrc tree in wheels/editable installs."""
+
+    def _get_data_files(self):
+        files = super()._get_data_files()
+        root = ROOT_DIR / "csrc/quantization/bitblend"
+        if not root.is_dir():
+            return files
+        for source in sorted(root.iterdir()):
+            if not source.is_dir():
+                continue
+            package = f"vllm.model_executor.kernels.linear.bitblend.{source.name}"
+            target = Path(self.build_lib) / package.replace(".", "/") / "csrc"
+            files.append(
+                (
+                    package,
+                    str(source),
+                    str(target),
+                    [
+                        str(p.relative_to(source))
+                        for p in sorted(source.rglob("*"))
+                        if p.is_file()
+                    ],
+                )
+            )
+        return files
+
+
 package_data = {
     "vllm": [
         "py.typed",
         "libs/*.so*",
         "model_executor/layers/fused_moe/configs/*.json",
         "model_executor/layers/quantization/utils/configs/*.json",
+        "model_executor/kernels/linear/bitblend/*/configs/*.json",
         "entrypoints/serve/instrumentator/static/*.js",
         "entrypoints/serve/instrumentator/static/*.css",
         "distributed/kv_transfer/kv_connector/v1/hf3fs/utils/*.cpp",
@@ -1691,6 +1722,8 @@ if (
     or has_precompiled_rust_extensions()
 ):
     cmdclass["build_rust"] = precompiled_build_rust
+
+cmdclass["build_py"] = build_py_with_kernel_sources
 
 # Resolve the Python version first because get_vllm_version() may set
 # SETUPTOOLS_SCM_PRETEND_VERSION, which the Rust version should inherit.

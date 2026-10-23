@@ -23,6 +23,9 @@ The following are the supported quantization formats for vLLM:
 - [TorchAO](torchao.md)
 - [FP8 ViT Encoder Attention](fp8_vit_attn.md)
 
+Experimental framework development: [BitBlend](bitblend.md) defines residual-plane
+interfaces; hardware kernels and serving integration are not yet implemented.
+
 ## Selecting Linear Backends per Quantization
 
 `--linear-backend` selects one backend for all quantized linear layers. For

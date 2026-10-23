@@ -484,6 +484,20 @@ class GPUModelRunner(
         self.speculative_config = vllm_config.speculative_config
         self.observability_config = vllm_config.observability_config
 
+        from vllm.model_executor.layers.quantization.bitblend.config import (
+            BitBlendConfig,
+            validate_mixed_batch_config,
+        )
+
+        validate_mixed_batch_config(vllm_config)
+        quant_config = vllm_config.quant_config
+        self.bitblend_config = (
+            quant_config
+            if isinstance(quant_config, BitBlendConfig) and quant_config.mixed_batch
+            else None
+        )
+        self.bitblend_workspace = None
+
         model_config = self.model_config
         cache_config = self.cache_config
         scheduler_config = self.scheduler_config
@@ -1487,6 +1501,16 @@ class GPUModelRunner(
         self.input_batch.condense()
         # Allow attention backend to reorder the batch, potentially
         self._may_reorder_batch(scheduler_output)
+        if self.bitblend_config is not None:
+            from vllm.v1.worker.bitblend_runtime import reorder_tier_batch
+
+            reorder_tier_batch(
+                self.bitblend_config,
+                self.input_batch,
+                self.requests,
+                scheduler_output.num_scheduled_tokens,
+                self.reorder_batch_threshold,
+            )
         # Refresh batch metadata with any pending updates.
         self.input_batch.refresh_metadata()
 
@@ -4180,7 +4204,17 @@ class GPUModelRunner(
                 ubatch_slices_padded,
             )
         is_padding = self._prepare_padding_mask(num_tokens_unpadded, num_tokens_padded)
+        from vllm.v1.worker.bitblend_runtime import execution_context_for_batch
+
         with (
+            execution_context_for_batch(
+                self.bitblend_config,
+                self.input_batch,
+                self.requests,
+                scheduler_output.num_scheduled_tokens,
+                num_tokens_padded,
+                self.bitblend_workspace,
+            ),
             set_forward_context(
                 attn_metadata,
                 self.vllm_config,
@@ -5195,6 +5229,15 @@ class GPUModelRunner(
 
         get_offloader().post_init()
 
+        if self.bitblend_config is not None and not self.model_config.enforce_eager:
+            from vllm.v1.worker.bitblend_runtime import (
+                create_graph_workspace,
+            )
+
+            self.bitblend_workspace = create_graph_workspace(
+                self.get_model(), self.max_num_tokens, self.device
+            )
+
     def _setup_eagle3_aux_hidden_state_outputs(self) -> None:
         if not self.use_aux_hidden_state_outputs:
             return
@@ -5792,7 +5835,12 @@ class GPUModelRunner(
                 if num_tokens_across_dp is not None:
                     num_tokens_across_dp[:] = num_tokens_padded
 
+            from vllm.v1.worker.bitblend_runtime import execution_context_for_dummy
+
             with (
+                execution_context_for_dummy(
+                    self.bitblend_config, num_tokens_padded, self.bitblend_workspace
+                ),
                 self.maybe_randomize_inputs(
                     input_ids, inputs_embeds, randomize_inputs=randomize_inputs
                 ),

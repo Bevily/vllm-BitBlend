@@ -19,7 +19,7 @@ _MXFP4_GROUP_SIZE = 32
 
 
 class FlashInferMxFp4LinearKernel(MxFp4LinearKernel):
-    """MXFP4 W4A4 GEMM via FlashInfer CUTLASS (SM100+)."""
+    """MXFP4 W4A4 GEMM via FlashInfer CuTe-DSL or cuDNN (SM12x)."""
 
     @classmethod
     def is_supported(
@@ -72,7 +72,12 @@ class FlashInferMxFp4LinearKernel(MxFp4LinearKernel):
             layer.weight_scale,
             alpha=None,
             out_dtype=x.dtype,
-            backend="cute-dsl",
+            # FlashInfer's SM12x CuTe-DSL GEMM only supports NVFP4.
+            backend=(
+                "cudnn"
+                if current_platform.is_device_capability_family(120)
+                else "cute-dsl"
+            ),
             block_size=_MXFP4_GROUP_SIZE,
             use_nvfp4=False,
         )

@@ -13,6 +13,8 @@ from vllm.platforms import current_platform
 logger = init_logger(__name__)
 
 QuantizationMethods = Literal[
+    "bitblend",
+    "bitblend_mx",
     "awq",
     "auto_awq",
     "fp8",
@@ -133,6 +135,7 @@ def get_quantization_config(quantization: str) -> type[QuantizationConfig]:
 
     from .auto_awq import AutoAWQConfig
     from .auto_gptq import AutoGPTQConfig
+    from .bitblend import BitBlendConfig, BitBlendMXConfig
     from .compressed_tensors.compressed_tensors import (
         CompressedTensorsConfig,
     )
@@ -154,6 +157,8 @@ def get_quantization_config(quantization: str) -> type[QuantizationConfig]:
     from .torchao import TorchAOConfig
 
     method_to_config: dict[str, type[QuantizationConfig]] = {
+        "bitblend": BitBlendConfig,
+        "bitblend_mx": BitBlendMXConfig,
         "awq": AutoAWQConfig,
         "awq_marlin": AutoAWQConfig,
         "auto_awq": AutoAWQConfig,

@@ -48,6 +48,7 @@ if TYPE_CHECKING:
     VLLM_LOG_STATS_INTERVAL: float = 10.0
     VLLM_TRACE_FUNCTION: int = 0
     VLLM_USE_FLASHINFER_SAMPLER: bool = True
+    VLLM_BITBLEND_SM120_TACTICS: str | None = None
     VLLM_PP_LAYER_PARTITION: str | None = None
     VLLM_CPU_KVCACHE_SPACE: int | None = 0
     VLLM_CPU_OMP_THREADS_BIND: str = "auto"
@@ -613,6 +614,10 @@ def _resolve_rust_cli_path() -> str | None:
 
 
 environment_variables: dict[str, Callable[[], Any]] = {
+    # Optional local path to an independently verified BitBlend SM120 tactic
+    # database. Unset uses a matching bundled table, otherwise default configs.
+    # Explicit incompatible databases fail loading.
+    "VLLM_BITBLEND_SM120_TACTICS": lambda: os.getenv("VLLM_BITBLEND_SM120_TACTICS"),
     # ================== Installation Time Env Vars ==================
     # Target device of vLLM, supporting [cuda (by default),
     # rocm, cpu]

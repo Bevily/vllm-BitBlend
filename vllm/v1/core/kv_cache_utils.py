@@ -665,8 +665,20 @@ def generate_block_hash_extra_keys(
         request, start_token_idx, end_token_idx
     )
 
+    # Precision changes KV at every layer; isolate even identical token prefixes.
+    bitblend_keys: list[tuple[str, str]] = []
+    params = request.sampling_params
+    if start_token_idx == 0 and params is not None and params.extra_args:
+        tier = params.extra_args.get("bitblend_tier")
+        if tier is not None:
+            bitblend_keys = [("bitblend_tier", tier)]
+
     extra_keys: list[Any] = (
-        lora_extra_keys + mm_extra_keys + cache_salt_keys + prompt_embeds_keys
+        lora_extra_keys
+        + mm_extra_keys
+        + cache_salt_keys
+        + prompt_embeds_keys
+        + bitblend_keys
     )
 
     if not extra_keys:
@@ -684,6 +696,7 @@ def to_event_extra_keys(
     External KV event consumers parse the pre-tagging shapes: bare LoRA names
     and cache salts, ``(mm_identifier, offset)`` pairs and bare prompt-embeds
     digests. Events keep that format until consumers handle the tagged keys.
+    BitBlend precision is a new key and retains its tag in events.
 
     Args:
         extra_keys: One entry per block, each as returned by
@@ -698,7 +711,10 @@ def to_event_extra_keys(
     event_keys = [
         None
         if keys is None
-        else tuple(key[1:] if key[0] == "mm" else key[1] for key in keys)
+        else tuple(
+            key if key[0] == "bitblend_tier" else key[1:] if key[0] == "mm" else key[1]
+            for key in keys
+        )
         for keys in extra_keys
     ]
     return event_keys or None

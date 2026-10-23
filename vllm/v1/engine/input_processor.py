@@ -55,6 +55,11 @@ class InputProcessor:
         self.structured_outputs_config = vllm_config.structured_outputs_config
         self.observability_config = vllm_config.observability_config
         self.diffusion_config = vllm_config.diffusion_config
+        from vllm.model_executor.layers.quantization.bitblend.config import (
+            validate_mixed_batch_config,
+        )
+
+        validate_mixed_batch_config(vllm_config)
         # Load the custom logits processor classes once; the returned callable
         # runs their validate_params hooks per request at admission.
         self.validate_logits_processors_params = (
@@ -389,6 +394,30 @@ class InputProcessor:
         watermarking = self._validate_params(params, supported_tasks)
         self._validate_lora(lora_request)
 
+        from vllm.model_executor.layers.quantization.bitblend.config import (
+            BitBlendConfig,
+        )
+
+        bitblend_tier = None
+        quant_config = self.vllm_config.quant_config
+        if isinstance(params, SamplingParams):
+            if isinstance(quant_config, BitBlendConfig):
+                try:
+                    bitblend_tier = quant_config.request_tier(params.extra_args)
+                except ValueError as error:
+                    raise VLLMValidationError(
+                        str(error), parameter="bitblend_tier"
+                    ) from error
+                if quant_config.mixed_batch and (resumable or session_id is not None):
+                    raise VLLMValidationError(
+                        "BitBlend mixed_batch does not support resumable sessions"
+                    )
+            elif params.extra_args and "bitblend_tier" in params.extra_args:
+                raise VLLMValidationError(
+                    "bitblend_tier requires a BitBlend model",
+                    parameter="bitblend_tier",
+                )
+
         parallel_config = self.vllm_config.parallel_config
         dp_size = parallel_config.data_parallel_size
         dp_local_size = parallel_config.data_parallel_size_local
@@ -447,6 +476,11 @@ class InputProcessor:
         if isinstance(params, SamplingParams):
             # TODO: can we avoid cloning here in multiproc case?
             sampling_params = params.clone()
+            if bitblend_tier is not None:
+                sampling_params.extra_args = {
+                    **(sampling_params.extra_args or {}),
+                    "bitblend_tier": bitblend_tier,
+                }
             # Resolve on the request-local copy: `params` may be shared across
             # prompts, requests and even engines by the caller.
             assert watermarking is not None

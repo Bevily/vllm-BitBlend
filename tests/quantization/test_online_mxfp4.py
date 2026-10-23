@@ -47,6 +47,57 @@ from vllm.platforms import PlatformEnum, current_platform
 from .reference_mxfp4 import dq_mxfp4_torch, qdq_mxfp4_torch
 
 
+@pytest.mark.skipif(
+    not current_platform.is_device_capability_family(120), reason="requires SM12x"
+)
+@pytest.mark.parametrize("m", [1, 4, 32, 128])
+def test_flashinfer_sm12x_mxfp4_matches_decoded_gemm(m: int) -> None:
+    """CuDNN must consume the native MXFP4 scale layout, including decode M=1."""
+    from vllm.model_executor.kernels.linear.mxfp4.base import MxFp4LinearLayerConfig
+    from vllm.model_executor.kernels.linear.mxfp4.flashinfer import (
+        FlashInferMxFp4LinearKernel,
+    )
+    from vllm.utils.flashinfer import flashinfer_mxfp4_quantize
+
+    supported, reason = FlashInferMxFp4LinearKernel.is_supported()
+    if not supported:
+        pytest.skip(reason)
+    torch.manual_seed(42)
+    n, k = 1024, 1024
+    x = torch.randn(m, k, device="cuda", dtype=torch.bfloat16)
+    weight = torch.randn(n, k, device="cuda", dtype=torch.bfloat16)
+    packed, scales = mxfp4_quantize(weight)
+    decoded_weight = dq_mxfp4_torch(packed, scales, torch.bfloat16)
+    packed_x, swizzled = flashinfer_mxfp4_quantize(x, backend="cute-dsl")
+    # Invert the 128x4 scale swizzle for an independent decoded GEMM oracle.
+    mp, kp = ((m + 127) // 128) * 128, ((k // 32 + 3) // 4) * 4
+    linear = (
+        swizzled.view(torch.uint8)
+        .reshape(mp // 128, kp // 4, 32, 4, 4)
+        .permute(0, 3, 2, 1, 4)
+        .contiguous()
+        .reshape(mp, kp)[:m, : k // 32]
+    )
+    decoded_x = dq_mxfp4_torch(packed_x, linear, torch.bfloat16)
+    layer = torch.nn.Module()
+    layer.weight = torch.nn.Parameter(packed, requires_grad=False)
+    layer.weight_scale = torch.nn.Parameter(scales, requires_grad=False)
+    layer.output_size_per_partition = n
+    kernel = FlashInferMxFp4LinearKernel(
+        MxFp4LinearLayerConfig(activation_quant_key=kMxfp4Dynamic)
+    )
+    kernel.process_weights_after_loading(layer)
+    actual = kernel.apply_weights(layer, x)
+    expected = (decoded_x.float() @ decoded_weight.float().T).to(x.dtype)
+    assert actual.shape == (m, n)
+    assert actual.dtype == x.dtype
+    assert torch.isfinite(actual).all()
+    relative_error = (
+        actual.float() - expected.float()
+    ).norm() / expected.float().norm()
+    assert relative_error < 0.01
+
+
 def fix_negative_zeros(tensor: torch.Tensor) -> torch.Tensor:
     """Normalize FP4 e2m1 negative-zero codewords (0b1000) to positive zero
     (0b0000) in a packed uint8 tensor (two e2m1 values per byte, low nibble
